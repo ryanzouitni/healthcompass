@@ -1,0 +1,20 @@
+[
+  {
+    "id": "nice_ng28",
+    "title": "NICE Guideline NG28 - Type 2 diabetes in adults: management",
+    "file": "server/rag/data/pdfs/NICE_NG28_Type2_Diabetes.pdf",
+    "publisher": "NICE (UK)",
+    "country": "UK",
+    "language": "EN",
+    "tags": ["diabetes", "type2", "guideline", "nice"]
+  },
+  {
+    "id": "cdc_diabetes",
+    "title": "CDC - Diabetes guidance (patient education / management)",
+    "file": "server/rag/data/pdfs/CDC_Diabetes_Guidance.pdf",
+    "publisher": "CDC (USA)",
+    "country": "USA",
+    "language": "EN",
+    "tags": ["diabetes", "education", "cdc"]
+  }
+]
