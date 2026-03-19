@@ -14,7 +14,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useLanguage } from "@/lib/language-context";
-import { apiRequest } from "@/lib/queryClient";
 import type { Assessment, RiskResult, LocationAccess } from "@shared/schema";
 import { moroccoRegions } from "@shared/facilities";
 
@@ -24,10 +23,10 @@ type AgeGroup = "infant" | "child" | "adolescent" | "adult";
 
 function getAgeGroup(ageValue: number, ageUnit: "years" | "months"): AgeGroup {
   const ageInMonths = ageUnit === "months" ? ageValue : ageValue * 12;
-  if (ageInMonths <= 24) return "infant"; // 0-2 years (inclusive)
-  if (ageInMonths <= 144) return "child"; // 2-12 years (inclusive)
-  if (ageInMonths < 216) return "adolescent"; // 12-18 years
-  return "adult"; // 18+ years
+  if (ageInMonths <= 24) return "infant";
+  if (ageInMonths <= 144) return "child";
+  if (ageInMonths < 216) return "adolescent";
+  return "adult";
 }
 
 interface FormData {
@@ -55,7 +54,6 @@ interface FormData {
   slowHealingWounds: boolean;
   chestPain: boolean;
   shortnessOfBreath: boolean;
-  // Additional symptoms (expanded list)
   numbnessTingling: boolean;
   dizziness: boolean;
   frequentHunger: boolean;
@@ -68,21 +66,17 @@ interface FormData {
   skinChanges: boolean;
   irregularHeartbeat: boolean;
   swollenFeetAnkles: boolean;
-  // Infant/child-specific
   feedingType: "breastfed" | "formula" | "mixed" | "solid" | "";
   growthConcerns: boolean;
   frequentInfections: boolean;
   irritability: boolean;
   poorFeeding: boolean;
   wetDiapers: "normal" | "increased" | "decreased" | "";
-  // Pediatric-specific
   bedwetting: boolean;
   lethargy: boolean;
   fruityBreath: boolean;
   vomiting: boolean;
-  // Custom symptoms
   customSymptoms: string;
-  // Location
   locationMethod: "gps" | "manual" | "prefer_not" | "";
   latitude: number | null;
   longitude: number | null;
@@ -120,7 +114,6 @@ const initialFormData: FormData = {
   slowHealingWounds: false,
   chestPain: false,
   shortnessOfBreath: false,
-  // Additional symptoms (expanded list)
   numbnessTingling: false,
   dizziness: false,
   frequentHunger: false,
@@ -133,21 +126,17 @@ const initialFormData: FormData = {
   skinChanges: false,
   irregularHeartbeat: false,
   swollenFeetAnkles: false,
-  // Infant/child-specific
   feedingType: "",
   growthConcerns: false,
   frequentInfections: false,
   irritability: false,
   poorFeeding: false,
   wetDiapers: "",
-  // Pediatric-specific
   bedwetting: false,
   lethargy: false,
   fruityBreath: false,
   vomiting: false,
-  // Custom symptoms
   customSymptoms: "",
-  // Location
   locationMethod: "",
   latitude: null,
   longitude: null,
@@ -169,36 +158,65 @@ export default function AssessmentPage() {
   const [geoStatus, setGeoStatus] = useState<"idle" | "detecting" | "success" | "error">("idle");
   const [highAccuracy, setHighAccuracy] = useState(false);
   const [geoAccuracy, setGeoAccuracy] = useState<number | null>(null);
+  const [submitError, setSubmitError] = useState<string>("");
 
   const mutation = useMutation({
     mutationFn: async (data: Assessment) => {
       console.log("Submitting assessment:", JSON.stringify(data, null, 2));
-      const response = await apiRequest("POST", "/api/assess", data);
-      const result = await response.json();
-      console.log("Assessment result:", JSON.stringify(result, null, 2));
-      return result as { success: boolean; result: RiskResult };
+
+      const response = await fetch("/api/assess", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(data),
+      });
+
+      const rawText = await response.text();
+      console.log("Raw assess response:", rawText);
+
+      let parsed: any = null;
+      try {
+        parsed = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        parsed = null;
+      }
+
+      if (!response.ok) {
+        const message =
+          parsed?.error ||
+          parsed?.message ||
+          rawText ||
+          `Request failed with status ${response.status}`;
+        throw new Error(message);
+      }
+
+      console.log("Assessment result:", parsed);
+      return parsed as { success: boolean; result: RiskResult };
     },
     onSuccess: (data) => {
+      setSubmitError("");
       sessionStorage.setItem("assessmentResult", JSON.stringify(data.result));
       setLocation("/results");
     },
-    onError: (error) => {
+    onError: (error: any) => {
       console.error("Assessment error:", error);
+      setSubmitError(error?.message || "An error occurred. Please try again.");
     },
   });
 
   const updateField = <K extends keyof FormData>(field: K, value: FormData[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
     setErrors((prev) => ({ ...prev, [field]: "" }));
+    if (submitError) setSubmitError("");
   };
 
   const ageGroup = getAgeGroup(formData.ageValue, formData.ageUnit);
-  
+
   const validateStep = (): boolean => {
     const newErrors: Record<string, string> = {};
 
     if (step === 1) {
-      // Validate age based on unit
       if (formData.ageUnit === "months") {
         if (formData.ageValue < 0 || formData.ageValue > 23) {
           newErrors.ageValue = t("validation.ageMonthsRange");
@@ -211,10 +229,9 @@ export default function AssessmentPage() {
     }
 
     if (step === 2) {
-      // Adjust weight/height validation based on age
       const minWeight = ageGroup === "infant" ? 0.5 : ageGroup === "child" ? 5 : 30;
       const minHeight = ageGroup === "infant" ? 20 : ageGroup === "child" ? 50 : 100;
-      
+
       if (!formData.weight || formData.weight < minWeight || formData.weight > 300) {
         newErrors.weight = t("validation.weightRange");
       }
@@ -245,7 +262,7 @@ export default function AssessmentPage() {
 
   const handleSubmit = () => {
     let locationAccess: LocationAccess | undefined = undefined;
-    
+
     if (formData.locationMethod && formData.locationMethod !== "prefer_not") {
       locationAccess = {
         locationMethod: formData.locationMethod as "gps" | "manual",
@@ -254,15 +271,23 @@ export default function AssessmentPage() {
         city: formData.city || undefined,
         province: formData.province || undefined,
         region: formData.region || undefined,
-        settingType: formData.settingType ? formData.settingType as "urban" | "rural" | "not_sure" : undefined,
-        distanceToClinic: formData.distanceToClinic ? formData.distanceToClinic as "less_5km" | "5_20km" | "20_50km" | "more_50km" : undefined,
-        transportDifficulty: formData.transportDifficulty ? formData.transportDifficulty as "easy" | "moderate" | "difficult" : undefined,
-        costBarrier: formData.costBarrier ? formData.costBarrier as "low" | "moderate" | "high" : undefined,
+        settingType: formData.settingType
+          ? (formData.settingType as "urban" | "rural" | "not_sure")
+          : undefined,
+        distanceToClinic: formData.distanceToClinic
+          ? (formData.distanceToClinic as "less_5km" | "5_20km" | "20_50km" | "more_50km")
+          : undefined,
+        transportDifficulty: formData.transportDifficulty
+          ? (formData.transportDifficulty as "easy" | "moderate" | "difficult")
+          : undefined,
+        costBarrier: formData.costBarrier
+          ? (formData.costBarrier as "low" | "moderate" | "high")
+          : undefined,
       };
     }
 
     const currentAgeGroup = getAgeGroup(formData.ageValue, formData.ageUnit);
-    
+
     const assessmentData: Assessment = {
       ageUnit: formData.ageUnit,
       ageValue: formData.ageValue,
@@ -274,16 +299,26 @@ export default function AssessmentPage() {
       familyHistoryHeartDisease: formData.familyHistoryHeartDisease,
       personalHistoryHighBloodPressure: formData.personalHistoryHighBloodPressure,
       personalHistoryHighCholesterol: formData.personalHistoryHighCholesterol,
-      previousGestationalDiabetes: formData.gender === "female" && currentAgeGroup === "adult" ? formData.previousGestationalDiabetes : undefined,
-      // Lifestyle factors - only for adolescents and adults
+      previousGestationalDiabetes:
+        formData.gender === "female" && currentAgeGroup === "adult"
+          ? formData.previousGestationalDiabetes
+          : undefined,
       physicalActivityLevel: currentAgeGroup !== "infant" ? formData.physicalActivityLevel : undefined,
-      smokingStatus: currentAgeGroup === "adult" || currentAgeGroup === "adolescent" ? formData.smokingStatus : undefined,
+      smokingStatus:
+        currentAgeGroup === "adult" || currentAgeGroup === "adolescent"
+          ? formData.smokingStatus
+          : undefined,
       dietQuality: currentAgeGroup !== "infant" ? formData.dietQuality : undefined,
       sleepHours: formData.sleepHours,
-      stressLevel: currentAgeGroup === "adult" || currentAgeGroup === "adolescent" ? formData.stressLevel : undefined,
-      // Infant/child-specific
+      stressLevel:
+        currentAgeGroup === "adult" || currentAgeGroup === "adolescent"
+          ? formData.stressLevel
+          : undefined,
       feedingType: currentAgeGroup === "infant" && formData.feedingType ? formData.feedingType : undefined,
-      growthConcerns: currentAgeGroup === "infant" || currentAgeGroup === "child" ? formData.growthConcerns : undefined,
+      growthConcerns:
+        currentAgeGroup === "infant" || currentAgeGroup === "child"
+          ? formData.growthConcerns
+          : undefined,
       frequentInfections: currentAgeGroup !== "adult" ? formData.frequentInfections : undefined,
       irritability: currentAgeGroup === "infant" ? formData.irritability : undefined,
       poorFeeding: currentAgeGroup === "infant" ? formData.poorFeeding : undefined,
@@ -292,29 +327,74 @@ export default function AssessmentPage() {
       frequentUrination: formData.frequentUrination,
       unexplainedWeightChange: formData.unexplainedWeightChange,
       fatigue: formData.fatigue,
-      blurredVision: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.blurredVision : undefined,
-      slowHealingWounds: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.slowHealingWounds : undefined,
-      chestPain: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.chestPain : undefined,
-      shortnessOfBreath: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.shortnessOfBreath : undefined,
-      // Expanded symptom list
-      numbnessTingling: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.numbnessTingling : undefined,
-      dizziness: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.dizziness : undefined,
+      blurredVision:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.blurredVision
+          : undefined,
+      slowHealingWounds:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.slowHealingWounds
+          : undefined,
+      chestPain:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.chestPain
+          : undefined,
+      shortnessOfBreath:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.shortnessOfBreath
+          : undefined,
+      numbnessTingling:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.numbnessTingling
+          : undefined,
+      dizziness:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.dizziness
+          : undefined,
       frequentHunger: formData.frequentHunger,
       dryMouth: formData.dryMouth,
-      itchySkin: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.itchySkin : undefined,
-      muscleCramps: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.muscleCramps : undefined,
-      headaches: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.headaches : undefined,
+      itchySkin:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.itchySkin
+          : undefined,
+      muscleCramps:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.muscleCramps
+          : undefined,
+      headaches:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.headaches
+          : undefined,
       nausea: formData.nausea,
-      excessiveSweating: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.excessiveSweating : undefined,
-      skinChanges: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.skinChanges : undefined,
-      irregularHeartbeat: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.irregularHeartbeat : undefined,
-      swollenFeetAnkles: currentAgeGroup === "adolescent" || currentAgeGroup === "adult" ? formData.swollenFeetAnkles : undefined,
-      // Pediatric-specific symptoms
+      excessiveSweating:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.excessiveSweating
+          : undefined,
+      skinChanges:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.skinChanges
+          : undefined,
+      irregularHeartbeat:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.irregularHeartbeat
+          : undefined,
+      swollenFeetAnkles:
+        currentAgeGroup === "adolescent" || currentAgeGroup === "adult"
+          ? formData.swollenFeetAnkles
+          : undefined,
       bedwetting: currentAgeGroup === "child" ? formData.bedwetting : undefined,
-      lethargy: currentAgeGroup === "infant" || currentAgeGroup === "child" ? formData.lethargy : undefined,
-      fruityBreath: currentAgeGroup === "infant" || currentAgeGroup === "child" ? formData.fruityBreath : undefined,
-      vomiting: currentAgeGroup === "infant" || currentAgeGroup === "child" ? formData.vomiting : undefined,
-      // Custom symptoms
+      lethargy:
+        currentAgeGroup === "infant" || currentAgeGroup === "child"
+          ? formData.lethargy
+          : undefined,
+      fruityBreath:
+        currentAgeGroup === "infant" || currentAgeGroup === "child"
+          ? formData.fruityBreath
+          : undefined,
+      vomiting:
+        currentAgeGroup === "infant" || currentAgeGroup === "child"
+          ? formData.vomiting
+          : undefined,
       customSymptoms: formData.customSymptoms.trim() || undefined,
       locationAccess,
     };
@@ -336,10 +416,10 @@ export default function AssessmentPage() {
         () => {
           setGeoStatus("error");
         },
-        { 
-          timeout: useHighAccuracy ? 30000 : 10000, 
+        {
+          timeout: useHighAccuracy ? 30000 : 10000,
           enableHighAccuracy: useHighAccuracy,
-          maximumAge: useHighAccuracy ? 0 : 60000
+          maximumAge: useHighAccuracy ? 0 : 60000,
         }
       );
     } else {
@@ -351,7 +431,6 @@ export default function AssessmentPage() {
 
   return (
     <div className="container max-w-2xl px-4 py-8 md:py-12">
-      {/* Progress */}
       <div className="mb-8">
         <div className="mb-2 flex items-center justify-between text-sm">
           <span className="font-medium">{t("assessment.title")}</span>
@@ -368,18 +447,15 @@ export default function AssessmentPage() {
           <CardDescription>{t(`step${step}.desc`)}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Step 1: Demographics */}
           {step === 1 && (
             <>
               <div className="space-y-4">
                 <Label>{t("field.age")}</Label>
-                
-                {/* Age Unit Selection */}
+
                 <RadioGroup
                   value={formData.ageUnit}
                   onValueChange={(value) => {
                     updateField("ageUnit", value as "years" | "months");
-                    // Reset age value when switching units
                     if (value === "months") {
                       updateField("ageValue", 0);
                     } else {
@@ -390,15 +466,18 @@ export default function AssessmentPage() {
                 >
                   <div className="flex items-center space-x-2 rtl:space-x-reverse">
                     <RadioGroupItem value="years" id="ageYears" data-testid="radio-age-years" />
-                    <Label htmlFor="ageYears" className="font-normal">{t("field.age.years")}</Label>
+                    <Label htmlFor="ageYears" className="font-normal">
+                      {t("field.age.years")}
+                    </Label>
                   </div>
                   <div className="flex items-center space-x-2 rtl:space-x-reverse">
                     <RadioGroupItem value="months" id="ageMonths" data-testid="radio-age-months" />
-                    <Label htmlFor="ageMonths" className="font-normal">{t("field.age.months")}</Label>
+                    <Label htmlFor="ageMonths" className="font-normal">
+                      {t("field.age.months")}
+                    </Label>
                   </div>
                 </RadioGroup>
 
-                {/* Age Value Input */}
                 {formData.ageUnit === "months" ? (
                   <Select
                     value={formData.ageValue.toString()}
@@ -428,11 +507,8 @@ export default function AssessmentPage() {
                   />
                 )}
                 {errors.ageValue && <p className="text-sm text-destructive">{errors.ageValue}</p>}
-                
-                {/* Age group indicator */}
-                <p className="text-sm text-muted-foreground">
-                  {t(`field.ageGroup.${ageGroup}`)}
-                </p>
+
+                <p className="text-sm text-muted-foreground">{t(`field.ageGroup.${ageGroup}`)}</p>
               </div>
 
               <div className="space-y-3">
@@ -444,22 +520,27 @@ export default function AssessmentPage() {
                 >
                   <div className="flex items-center space-x-2 rtl:space-x-reverse">
                     <RadioGroupItem value="male" id="male" data-testid="radio-gender-male" />
-                    <Label htmlFor="male" className="font-normal">{t("field.gender.male")}</Label>
+                    <Label htmlFor="male" className="font-normal">
+                      {t("field.gender.male")}
+                    </Label>
                   </div>
                   <div className="flex items-center space-x-2 rtl:space-x-reverse">
                     <RadioGroupItem value="female" id="female" data-testid="radio-gender-female" />
-                    <Label htmlFor="female" className="font-normal">{t("field.gender.female")}</Label>
+                    <Label htmlFor="female" className="font-normal">
+                      {t("field.gender.female")}
+                    </Label>
                   </div>
                   <div className="flex items-center space-x-2 rtl:space-x-reverse">
                     <RadioGroupItem value="other" id="other" data-testid="radio-gender-other" />
-                    <Label htmlFor="other" className="font-normal">{t("field.gender.other")}</Label>
+                    <Label htmlFor="other" className="font-normal">
+                      {t("field.gender.other")}
+                    </Label>
                   </div>
                 </RadioGroup>
               </div>
             </>
           )}
 
-          {/* Step 2: Physical Measurements */}
           {step === 2 && (
             <>
               <div className="space-y-2">
@@ -509,7 +590,6 @@ export default function AssessmentPage() {
             </>
           )}
 
-          {/* Step 3: Medical History */}
           {step === 3 && (
             <div className="space-y-4">
               <div className="flex items-start space-x-3 rtl:space-x-reverse">
@@ -576,19 +656,24 @@ export default function AssessmentPage() {
             </div>
           )}
 
-          {/* Step 4: Lifestyle */}
           {step === 4 && (
             <>
               <div className="space-y-3">
                 <Label>{t("field.activity")}</Label>
                 <RadioGroup
                   value={formData.physicalActivityLevel}
-                  onValueChange={(value) => updateField("physicalActivityLevel", value as FormData["physicalActivityLevel"])}
+                  onValueChange={(value) =>
+                    updateField("physicalActivityLevel", value as FormData["physicalActivityLevel"])
+                  }
                   className="space-y-2"
                 >
                   {(["sedentary", "light", "moderate", "active"] as const).map((level) => (
                     <div key={level} className="flex items-center space-x-3 rtl:space-x-reverse">
-                      <RadioGroupItem value={level} id={`activity-${level}`} data-testid={`radio-activity-${level}`} />
+                      <RadioGroupItem
+                        value={level}
+                        id={`activity-${level}`}
+                        data-testid={`radio-activity-${level}`}
+                      />
                       <Label htmlFor={`activity-${level}`} className="font-normal">
                         {t(`field.activity.${level}`)}
                       </Label>
@@ -606,7 +691,11 @@ export default function AssessmentPage() {
                 >
                   {(["never", "former", "current"] as const).map((status) => (
                     <div key={status} className="flex items-center space-x-3 rtl:space-x-reverse">
-                      <RadioGroupItem value={status} id={`smoking-${status}`} data-testid={`radio-smoking-${status}`} />
+                      <RadioGroupItem
+                        value={status}
+                        id={`smoking-${status}`}
+                        data-testid={`radio-smoking-${status}`}
+                      />
                       <Label htmlFor={`smoking-${status}`} className="font-normal">
                         {t(`field.smoking.${status}`)}
                       </Label>
@@ -624,7 +713,11 @@ export default function AssessmentPage() {
                 >
                   {(["poor", "fair", "good", "excellent"] as const).map((quality) => (
                     <div key={quality} className="flex items-center space-x-3 rtl:space-x-reverse">
-                      <RadioGroupItem value={quality} id={`diet-${quality}`} data-testid={`radio-diet-${quality}`} />
+                      <RadioGroupItem
+                        value={quality}
+                        id={`diet-${quality}`}
+                        data-testid={`radio-diet-${quality}`}
+                      />
                       <Label htmlFor={`diet-${quality}`} className="font-normal">
                         {t(`field.diet.${quality}`)}
                       </Label>
@@ -654,7 +747,11 @@ export default function AssessmentPage() {
                 >
                   {(["low", "moderate", "high", "very_high"] as const).map((level) => (
                     <div key={level} className="flex items-center space-x-2 rtl:space-x-reverse">
-                      <RadioGroupItem value={level} id={`stress-${level}`} data-testid={`radio-stress-${level}`} />
+                      <RadioGroupItem
+                        value={level}
+                        id={`stress-${level}`}
+                        data-testid={`radio-stress-${level}`}
+                      />
                       <Label htmlFor={`stress-${level}`} className="font-normal">
                         {t(`field.stress.${level === "very_high" ? "veryHigh" : level}`)}
                       </Label>
@@ -665,16 +762,12 @@ export default function AssessmentPage() {
             </>
           )}
 
-          {/* Step 5: Symptoms */}
           {step === 5 && (
             <div className="space-y-6">
-              {/* Infant-specific symptoms */}
               {ageGroup === "infant" && (
                 <div className="space-y-4">
-                  <p className="text-sm text-muted-foreground">
-                    {t("field.infantSymptoms.desc")}
-                  </p>
-                  
+                  <p className="text-sm text-muted-foreground">{t("field.infantSymptoms.desc")}</p>
+
                   {[
                     { field: "irritability" as const, label: "field.irritability" },
                     { field: "poorFeeding" as const, label: "field.poorFeeding" },
@@ -694,7 +787,7 @@ export default function AssessmentPage() {
                       </Label>
                     </div>
                   ))}
-                  
+
                   <div className="space-y-3">
                     <Label>{t("field.wetDiapers")}</Label>
                     <RadioGroup
@@ -704,7 +797,11 @@ export default function AssessmentPage() {
                     >
                       {(["normal", "increased", "decreased"] as const).map((option) => (
                         <div key={option} className="flex items-center space-x-3 rtl:space-x-reverse">
-                          <RadioGroupItem value={option} id={`wetDiapers-${option}`} data-testid={`radio-wet-diapers-${option}`} />
+                          <RadioGroupItem
+                            value={option}
+                            id={`wetDiapers-${option}`}
+                            data-testid={`radio-wet-diapers-${option}`}
+                          />
                           <Label htmlFor={`wetDiapers-${option}`} className="font-normal">
                             {t(`field.wetDiapers.${option}`)}
                           </Label>
@@ -714,25 +811,24 @@ export default function AssessmentPage() {
                   </div>
                 </div>
               )}
-              
-              {/* Child-specific symptoms (including infants) */}
+
               {(ageGroup === "infant" || ageGroup === "child") && (
                 <div className="space-y-4">
                   {ageGroup === "child" && (
-                    <p className="text-sm text-muted-foreground">
-                      {t("field.childSymptoms.desc")}
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t("field.childSymptoms.desc")}</p>
                   )}
-                  
+
                   {[
                     { field: "growthConcerns" as const, label: "field.growthConcerns" },
                     { field: "frequentInfections" as const, label: "field.frequentInfections" },
-                    ...(ageGroup === "child" ? [
-                      { field: "bedwetting" as const, label: "field.bedwetting" },
-                      { field: "lethargy" as const, label: "field.lethargy" },
-                      { field: "vomiting" as const, label: "field.vomiting" },
-                      { field: "fruityBreath" as const, label: "field.fruityBreath" },
-                    ] : []),
+                    ...(ageGroup === "child"
+                      ? [
+                          { field: "bedwetting" as const, label: "field.bedwetting" },
+                          { field: "lethargy" as const, label: "field.lethargy" },
+                          { field: "vomiting" as const, label: "field.vomiting" },
+                          { field: "fruityBreath" as const, label: "field.fruityBreath" },
+                        ]
+                      : []),
                   ].map(({ field, label }) => (
                     <div key={field} className="flex items-start space-x-3 rtl:space-x-reverse">
                       <Checkbox
@@ -748,8 +844,7 @@ export default function AssessmentPage() {
                   ))}
                 </div>
               )}
-              
-              {/* Common symptoms for all ages */}
+
               <div className="space-y-4">
                 <p className="text-sm font-medium text-muted-foreground">
                   {t("field.commonSymptoms.title")}
@@ -776,8 +871,7 @@ export default function AssessmentPage() {
                   </div>
                 ))}
               </div>
-              
-              {/* Adult/adolescent-only symptoms */}
+
               {(ageGroup === "adolescent" || ageGroup === "adult") && (
                 <div className="space-y-4">
                   <p className="text-sm font-medium text-muted-foreground">
@@ -806,7 +900,7 @@ export default function AssessmentPage() {
                       </Label>
                     </div>
                   ))}
-                  
+
                   <p className="text-sm font-medium text-muted-foreground pt-2">
                     {t("field.heartSymptoms.title")}
                   </p>
@@ -830,15 +924,12 @@ export default function AssessmentPage() {
                   ))}
                 </div>
               )}
-              
-              {/* Custom symptoms text input */}
+
               <div className="space-y-3 pt-4 border-t">
                 <Label htmlFor="customSymptoms" className="font-medium">
                   {t("field.customSymptoms.title")}
                 </Label>
-                <p className="text-sm text-muted-foreground">
-                  {t("field.customSymptoms.desc")}
-                </p>
+                <p className="text-sm text-muted-foreground">{t("field.customSymptoms.desc")}</p>
                 <Textarea
                   id="customSymptoms"
                   value={formData.customSymptoms}
@@ -851,10 +942,8 @@ export default function AssessmentPage() {
             </div>
           )}
 
-          {/* Step 6: Location & Access */}
           {step === 6 && (
             <div className="space-y-6">
-              {/* Privacy Notice */}
               <div className="rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">
                 <div className="flex items-start gap-2">
                   <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -862,7 +951,6 @@ export default function AssessmentPage() {
                 </div>
               </div>
 
-              {/* Location Method Selection */}
               <div className="space-y-3">
                 <Label>{t("location.method")}</Label>
                 <RadioGroup
@@ -876,7 +964,12 @@ export default function AssessmentPage() {
                   className="space-y-3"
                 >
                   <div className="flex items-start space-x-3 rtl:space-x-reverse rounded-lg border p-3 hover-elevate cursor-pointer">
-                    <RadioGroupItem value="gps" id="location-gps" data-testid="radio-location-gps" className="mt-0.5" />
+                    <RadioGroupItem
+                      value="gps"
+                      id="location-gps"
+                      data-testid="radio-location-gps"
+                      className="mt-0.5"
+                    />
                     <div className="flex-1">
                       <Label htmlFor="location-gps" className="font-medium cursor-pointer flex items-center gap-2">
                         <Navigation className="h-4 w-4" />
@@ -890,7 +983,9 @@ export default function AssessmentPage() {
                               <Label htmlFor="high-accuracy" className="text-sm font-normal cursor-pointer">
                                 {t("location.highAccuracy")}
                               </Label>
-                              <p className="text-xs text-muted-foreground">{t("location.highAccuracy.desc")}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {t("location.highAccuracy.desc")}
+                              </p>
                             </div>
                             <Switch
                               id="high-accuracy"
@@ -932,7 +1027,12 @@ export default function AssessmentPage() {
                   </div>
 
                   <div className="flex items-start space-x-3 rtl:space-x-reverse rounded-lg border p-3 hover-elevate cursor-pointer">
-                    <RadioGroupItem value="manual" id="location-manual" data-testid="radio-location-manual" className="mt-0.5" />
+                    <RadioGroupItem
+                      value="manual"
+                      id="location-manual"
+                      data-testid="radio-location-manual"
+                      className="mt-0.5"
+                    />
                     <div className="flex-1">
                       <Label htmlFor="location-manual" className="font-medium cursor-pointer flex items-center gap-2">
                         <MapPin className="h-4 w-4" />
@@ -943,7 +1043,12 @@ export default function AssessmentPage() {
                   </div>
 
                   <div className="flex items-start space-x-3 rtl:space-x-reverse rounded-lg border p-3 hover-elevate cursor-pointer">
-                    <RadioGroupItem value="prefer_not" id="location-prefer-not" data-testid="radio-location-prefer-not" className="mt-0.5" />
+                    <RadioGroupItem
+                      value="prefer_not"
+                      id="location-prefer-not"
+                      data-testid="radio-location-prefer-not"
+                      className="mt-0.5"
+                    />
                     <div className="flex-1">
                       <Label htmlFor="location-prefer-not" className="font-medium cursor-pointer">
                         {t("location.preferNot")}
@@ -954,7 +1059,6 @@ export default function AssessmentPage() {
                 </RadioGroup>
               </div>
 
-              {/* Manual Location Input */}
               {formData.locationMethod === "manual" && (
                 <div className="space-y-4 rounded-lg border p-4">
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -981,10 +1085,7 @@ export default function AssessmentPage() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="region">{t("location.region")}</Label>
-                    <Select
-                      value={formData.region}
-                      onValueChange={(value) => updateField("region", value)}
-                    >
+                    <Select value={formData.region} onValueChange={(value) => updateField("region", value)}>
                       <SelectTrigger data-testid="select-region">
                         <SelectValue placeholder={t("location.region.placeholder")} />
                       </SelectTrigger>
@@ -1000,7 +1101,6 @@ export default function AssessmentPage() {
                 </div>
               )}
 
-              {/* Setting Type (Urban/Rural) */}
               {formData.locationMethod && formData.locationMethod !== "prefer_not" && (
                 <div className="space-y-3">
                   <Label>{t("setting.title")}</Label>
@@ -1011,7 +1111,11 @@ export default function AssessmentPage() {
                   >
                     {(["urban", "rural", "not_sure"] as const).map((setting) => (
                       <div key={setting} className="flex items-center space-x-2 rtl:space-x-reverse">
-                        <RadioGroupItem value={setting} id={`setting-${setting}`} data-testid={`radio-setting-${setting}`} />
+                        <RadioGroupItem
+                          value={setting}
+                          id={`setting-${setting}`}
+                          data-testid={`radio-setting-${setting}`}
+                        />
                         <Label htmlFor={`setting-${setting}`} className="font-normal">
                           {t(`setting.${setting === "not_sure" ? "notSure" : setting}`)}
                         </Label>
@@ -1021,7 +1125,6 @@ export default function AssessmentPage() {
                 </div>
               )}
 
-              {/* Access to Healthcare */}
               {formData.locationMethod && formData.locationMethod !== "prefer_not" && (
                 <div className="space-y-4 rounded-lg border p-4">
                   <h4 className="font-medium">{t("access.title")}</h4>
@@ -1030,7 +1133,9 @@ export default function AssessmentPage() {
                     <Label>{t("access.distance")}</Label>
                     <RadioGroup
                       value={formData.distanceToClinic}
-                      onValueChange={(value) => updateField("distanceToClinic", value as FormData["distanceToClinic"])}
+                      onValueChange={(value) =>
+                        updateField("distanceToClinic", value as FormData["distanceToClinic"])
+                      }
                       className="grid gap-2 sm:grid-cols-2"
                     >
                       {([
@@ -1040,7 +1145,11 @@ export default function AssessmentPage() {
                         { value: "more_50km", key: "more50" },
                       ] as const).map(({ value, key }) => (
                         <div key={value} className="flex items-center space-x-2 rtl:space-x-reverse">
-                          <RadioGroupItem value={value} id={`distance-${value}`} data-testid={`radio-distance-${value}`} />
+                          <RadioGroupItem
+                            value={value}
+                            id={`distance-${value}`}
+                            data-testid={`radio-distance-${value}`}
+                          />
                           <Label htmlFor={`distance-${value}`} className="font-normal">
                             {t(`access.distance.${key}`)}
                           </Label>
@@ -1053,12 +1162,18 @@ export default function AssessmentPage() {
                     <Label>{t("access.transport")}</Label>
                     <RadioGroup
                       value={formData.transportDifficulty}
-                      onValueChange={(value) => updateField("transportDifficulty", value as FormData["transportDifficulty"])}
+                      onValueChange={(value) =>
+                        updateField("transportDifficulty", value as FormData["transportDifficulty"])
+                      }
                       className="flex flex-wrap gap-4"
                     >
                       {(["easy", "moderate", "difficult"] as const).map((level) => (
                         <div key={level} className="flex items-center space-x-2 rtl:space-x-reverse">
-                          <RadioGroupItem value={level} id={`transport-${level}`} data-testid={`radio-transport-${level}`} />
+                          <RadioGroupItem
+                            value={level}
+                            id={`transport-${level}`}
+                            data-testid={`radio-transport-${level}`}
+                          />
                           <Label htmlFor={`transport-${level}`} className="font-normal">
                             {t(`access.transport.${level}`)}
                           </Label>
@@ -1076,7 +1191,11 @@ export default function AssessmentPage() {
                     >
                       {(["low", "moderate", "high"] as const).map((level) => (
                         <div key={level} className="flex items-center space-x-2 rtl:space-x-reverse">
-                          <RadioGroupItem value={level} id={`cost-${level}`} data-testid={`radio-cost-${level}`} />
+                          <RadioGroupItem
+                            value={level}
+                            id={`cost-${level}`}
+                            data-testid={`radio-cost-${level}`}
+                          />
                           <Label htmlFor={`cost-${level}`} className="font-normal">
                             {t(`access.cost.${level}`)}
                           </Label>
@@ -1091,7 +1210,6 @@ export default function AssessmentPage() {
         </CardContent>
       </Card>
 
-      {/* Navigation */}
       <div className="mt-6 flex items-center justify-between gap-4">
         <Button
           variant="outline"
@@ -1126,9 +1244,9 @@ export default function AssessmentPage() {
         </Button>
       </div>
 
-      {mutation.isError && (
+      {(mutation.isError || submitError) && (
         <div className="mt-4 rounded-lg bg-destructive/10 p-4 text-center text-destructive">
-          An error occurred. Please try again.
+          {submitError || "An error occurred. Please try again."}
         </div>
       )}
     </div>
